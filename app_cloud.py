@@ -253,9 +253,29 @@ def load_users() -> Dict[str, Dict[str, str]]:
     if df.empty:
         return DEFAULT_USERS.copy()
 
+    df = df.rename(columns=lambda c: clean_credential(c))
     expected = {"Username", "Password", "Role"}
     if not expected.issubset(set(df.columns)):
-        return DEFAULT_USERS.copy()
+        # Support accidental CSV-in-one-column format:
+        # Header cell: "Username, Password, Role"
+        # Row cell: "Sale3,sale123,Sales"
+        non_meta_cols = [c for c in df.columns if c != "_row"]
+        if len(non_meta_cols) == 1 and "," in non_meta_cols[0]:
+            source_col = non_meta_cols[0]
+            parsed_headers = [clean_credential(part) for part in source_col.split(",")]
+            if expected.issubset(set(parsed_headers)):
+                records: List[Dict[str, str]] = []
+                for raw_value in df[source_col].tolist():
+                    parts = [clean_credential(part) for part in str(raw_value).split(",")]
+                    if len(parts) < len(parsed_headers):
+                        parts.extend([""] * (len(parsed_headers) - len(parts)))
+                    row_map = dict(zip(parsed_headers, parts))
+                    records.append(row_map)
+                df = pd.DataFrame(records)
+            else:
+                return DEFAULT_USERS.copy()
+        else:
+            return DEFAULT_USERS.copy()
 
     users: Dict[str, Dict[str, str]] = {}
     for _, row in df.iterrows():
