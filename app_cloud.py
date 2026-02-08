@@ -1,4 +1,6 @@
-﻿from datetime import datetime, timedelta, timezone
+﻿import json
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import altair as alt
@@ -65,7 +67,14 @@ def parse_dt(series: pd.Series) -> pd.Series:
 
 @st.cache_resource(show_spinner=False)
 def get_gspread_client() -> gspread.Client:
-    creds = dict(st.secrets["gcp_service_account"])
+    if "gcp_service_account_json" in st.secrets:
+        raw_json = st.secrets["gcp_service_account_json"]
+        if isinstance(raw_json, str):
+            creds = json.loads(raw_json)
+        else:
+            creds = dict(raw_json)
+    else:
+        creds = dict(st.secrets["gcp_service_account"])
     # Normalize PEM formatting to avoid common secrets.toml paste issues.
     if "private_key" in creds:
         private_key = str(creds["private_key"]).strip()
@@ -567,3 +576,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
