@@ -517,11 +517,19 @@ def render_admin_dashboard() -> None:
 def main() -> None:
     st.title("FB Lead Hunter - Cloud CRM")
 
+    users_error: Optional[str] = None
     try:
         users = load_users()
     except Exception as error:
-        st.error(f"Cannot load users: {error}")
-        st.stop()
+        users = DEFAULT_USERS.copy()
+        users_error = str(error)
+
+    if users_error:
+        st.warning(
+            "Google Sheets user auth is unavailable right now. "
+            "Using fallback users from code. "
+            f"Error: {users_error}"
+        )
 
     if "current_user" not in st.session_state:
         render_login(users)
@@ -540,14 +548,21 @@ def main() -> None:
                     del st.session_state[key]
             st.rerun()
 
-    if is_admin:
-        tab_sales, tab_admin = st.tabs(["Sales View", "Boss View"])
-        with tab_sales:
+    try:
+        if is_admin:
+            tab_sales, tab_admin = st.tabs(["Sales View", "Boss View"])
+            with tab_sales:
+                render_sales_view(current_user)
+            with tab_admin:
+                render_admin_dashboard()
+        else:
             render_sales_view(current_user)
-        with tab_admin:
-            render_admin_dashboard()
-    else:
-        render_sales_view(current_user)
+    except Exception as error:
+        st.error(f"Google Sheets connection error: {error}")
+        st.info(
+            "Please verify Streamlit secrets, spreadsheet sharing (Editor), "
+            "and worksheet names: Leads / Users."
+        )
 
 
 if __name__ == "__main__":
