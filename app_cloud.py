@@ -66,6 +66,13 @@ def parse_dt(series: pd.Series) -> pd.Series:
 @st.cache_resource(show_spinner=False)
 def get_gspread_client() -> gspread.Client:
     creds = dict(st.secrets["gcp_service_account"])
+    # Normalize PEM formatting to avoid common secrets.toml paste issues.
+    if "private_key" in creds:
+        private_key = str(creds["private_key"]).strip()
+        if private_key.startswith('"') and private_key.endswith('"'):
+            private_key = private_key[1:-1]
+        private_key = private_key.replace("\\n", "\n").replace("\r\n", "\n")
+        creds["private_key"] = private_key
     return gspread.service_account_from_dict(creds)
 
 
