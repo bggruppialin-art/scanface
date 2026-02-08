@@ -244,41 +244,55 @@ def load_leads() -> pd.DataFrame:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_users() -> Dict[str, Dict[str, str]]:
+    expected = {"Username", "Password", "Role"}
     ws_name = get_sheet_setting("users_worksheet", "Users")
     ws = get_worksheet(ws_name, required=False)
-    if ws is None:
-        return DEFAULT_USERS.copy()
 
-    df, _ = read_ws_dataframe(ws)
-    if df.empty:
-        return DEFAULT_USERS.copy()
+    def normalize_users_df(raw_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if raw_df.empty:
+            return None
 
-    df = df.rename(columns=lambda c: clean_credential(c))
-    expected = {"Username", "Password", "Role"}
-    if not expected.issubset(set(df.columns)):
+        local_df = raw_df.rename(columns=lambda c: clean_credential(c))
+        if expected.issubset(set(local_df.columns)):
+            return local_df
+
         # Support accidental CSV-in-one-column format:
         # Header cell: "Username, Password, Role"
         # Row cell: "Sale3,sale123,Sales"
-        non_meta_cols = [c for c in df.columns if c != "_row"]
+        non_meta_cols = [c for c in local_df.columns if c != "_row"]
         if len(non_meta_cols) == 1 and "," in non_meta_cols[0]:
             source_col = non_meta_cols[0]
             parsed_headers = [clean_credential(part) for part in source_col.split(",")]
             if expected.issubset(set(parsed_headers)):
                 records: List[Dict[str, str]] = []
-                for raw_value in df[source_col].tolist():
+                for raw_value in local_df[source_col].tolist():
                     parts = [clean_credential(part) for part in str(raw_value).split(",")]
                     if len(parts) < len(parsed_headers):
                         parts.extend([""] * (len(parsed_headers) - len(parts)))
                     row_map = dict(zip(parsed_headers, parts))
                     records.append(row_map)
-                df = pd.DataFrame(records)
-            else:
-                return DEFAULT_USERS.copy()
-        else:
-            return DEFAULT_USERS.copy()
+                return pd.DataFrame(records)
+        return None
+
+    parsed_df: Optional[pd.DataFrame] = None
+    if ws is not None:
+        df, _ = read_ws_dataframe(ws)
+        parsed_df = normalize_users_df(df)
+
+    # Auto-discover a valid users worksheet if configured name is missing/wrong.
+    if parsed_df is None:
+        spreadsheet = get_spreadsheet()
+        for candidate_ws in spreadsheet.worksheets():
+            df, _ = read_ws_dataframe(candidate_ws)
+            parsed_df = normalize_users_df(df)
+            if parsed_df is not None:
+                break
+
+    if parsed_df is None:
+        return DEFAULT_USERS.copy()
 
     users: Dict[str, Dict[str, str]] = {}
-    for _, row in df.iterrows():
+    for _, row in parsed_df.iterrows():
         username = clean_credential(row.get("Username", ""))
         password = clean_credential(row.get("Password", ""))
         role = clean_credential(row.get("Role", "Sales")) or "Sales"
