@@ -520,15 +520,22 @@ def script_manager_sidebar() -> Tuple[str, str]:
 
 def render_login(users: Dict[str, Dict[str, str]]) -> None:
     st.subheader("Login")
+    available_users = sorted(users.keys())
+    st.caption("Available users: " + ", ".join(available_users))
+
     with st.form("login_form"):
-        username = st.selectbox("Username", sorted(users.keys()))
+        username_input = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Login", use_container_width=True)
 
     if submit:
-        account = users.get(username)
+        normalized_input = clean_credential(username_input)
+        username_lookup = {clean_credential(u).lower(): u for u in available_users}
+        matched_username = username_lookup.get(normalized_input.lower(), "")
+        account = users.get(matched_username)
+
         if account and clean_credential(password) == clean_credential(account["password"]):
-            st.session_state["current_user"] = username
+            st.session_state["current_user"] = matched_username
             st.session_state["current_role"] = account.get("role", "Sales")
             st.success("Login successful")
             st.rerun()
