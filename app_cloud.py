@@ -62,6 +62,10 @@ FRESHNESS_ORDER = {
 }
 
 
+def clean_credential(value: object) -> str:
+    return str(value).replace("\u00a0", " ").strip()
+
+
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -255,9 +259,9 @@ def load_users() -> Dict[str, Dict[str, str]]:
 
     users: Dict[str, Dict[str, str]] = {}
     for _, row in df.iterrows():
-        username = str(row.get("Username", "")).strip()
-        password = str(row.get("Password", "")).strip()
-        role = str(row.get("Role", "Sales")).strip() or "Sales"
+        username = clean_credential(row.get("Username", ""))
+        password = clean_credential(row.get("Password", ""))
+        role = clean_credential(row.get("Role", "Sales")) or "Sales"
         if username and password:
             users[username] = {"password": password, "role": role}
 
@@ -523,7 +527,7 @@ def render_login(users: Dict[str, Dict[str, str]]) -> None:
 
     if submit:
         account = users.get(username)
-        if account and password == account["password"]:
+        if account and clean_credential(password) == clean_credential(account["password"]):
             st.session_state["current_user"] = username
             st.session_state["current_role"] = account.get("role", "Sales")
             st.success("Login successful")
