@@ -242,6 +242,13 @@ def load_leads() -> pd.DataFrame:
     return df
 
 
+def _safe_scalar(value: object) -> str:
+    """Extract a scalar string even when *value* is a pandas Series (duplicate columns)."""
+    if isinstance(value, pd.Series):
+        return str(value.iloc[0]) if len(value) > 0 else ""
+    return str(value)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_users() -> Dict[str, Dict[str, str]]:
     expected = {"Username", "Password", "Role"}
@@ -253,6 +260,8 @@ def load_users() -> Dict[str, Dict[str, str]]:
             return None
 
         local_df = raw_df.rename(columns=lambda c: clean_credential(c))
+        # Drop duplicate columns, keeping only the first occurrence
+        local_df = local_df.loc[:, ~local_df.columns.duplicated(keep="first")]
         if expected.issubset(set(local_df.columns)):
             return local_df
 
@@ -293,9 +302,9 @@ def load_users() -> Dict[str, Dict[str, str]]:
 
     users: Dict[str, Dict[str, str]] = {}
     for _, row in parsed_df.iterrows():
-        username = clean_credential(row.get("Username", ""))
-        password = clean_credential(row.get("Password", ""))
-        role = clean_credential(row.get("Role", "Sales")) or "Sales"
+        username = clean_credential(_safe_scalar(row.get("Username", "")))
+        password = clean_credential(_safe_scalar(row.get("Password", "")))
+        role = clean_credential(_safe_scalar(row.get("Role", "Sales"))) or "Sales"
         if username and password:
             users[username] = {"password": password, "role": role}
 
@@ -729,7 +738,7 @@ def render_sales_workspace(current_user: str, selected_script_name: str, selecte
     m2.metric("Filtered Leads", f"{len(filtered_df):,}")
     m3.metric("Interested", int((my_df["Status"] == "Interested").sum()))
 
-    list_tab, analytics_tab = st.tabs(["List View", "War Room Analytics"])
+    list_tab, analytics_tab, history_tab = st.tabs(["List View", "War Room Analytics", "📋 ประวัติการทำงาน"])
 
     with list_tab:
         left, right = st.columns([7, 3], gap="large")
@@ -868,6 +877,158 @@ def render_sales_workspace(current_user: str, selected_script_name: str, selecte
     with analytics_tab:
         render_war_room_analytics(my_df, "War Room Analytics (My Leads)")
 
+    with history_tab:
+        render_work_history(my_df, show_user_column=False)
+
+
+def render_work_history(df: pd.DataFrame, show_user_column: bool = True) -> None:
+    """Render work-history tab with time-period segmented buttons."""
+    st.subheader("📋 ประวัติการทำงาน")
+
+    if df.empty:
+        st.info("ไม่มีข้อมูล Lead")
+        return
+
+    # --- time filter buttons ------------------------------------------------
+    period_labels = {"วันนี้": 0, "เมื่อวาน": 1, "7 วัน": 7, "1 เดือน": 30}
+    cols = st.columns(len(period_labels))
+    selected_period = st.session_state.get("history_period", "วันนี้")
+    for idx, (label, _) in enumerate(period_labels.items()):
+        if cols[idx].button(
+            label,
+            use_container_width=True,
+            type="primary" if selected_period == label else "secondary",
+            key=f"hist_btn_{label}",
+        ):
+            st.session_state["history_period"] = label
+            selected_period = label
+
+    # --- build date range ---------------------------------------------------
+    now_utc = datetime.now(timezone.utc)
+    today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    days_back = period_labels[selected_period]
+    if selected_period == "เมื่อวาน":
+        range_start = today_start - timedelta(days=1)
+        range_end = today_start
+    elif days_back == 0:  # วันนี้
+        range_start = today_start
+        range_end = now_utc
+    else:
+        range_start = today_start - timedelta(days=days_back)
+        range_end = now_utc
+
+    # --- filter data --------------------------------------------------------
+    ts = parse_dt(df["Updated_At"])
+    mask = ts.notna() & (ts >= range_start) & (ts <= range_end)
+    history = df.loc[mask].copy()
+    history["Updated_At_DT"] = ts[mask]
+
+    # Sort newest first
+    history = history.sort_values("Updated_At_DT", ascending=False)
+
+    # --- summary metrics ----------------------------------------------------
+    total_actions = len(history)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("📊 จำนวนการดำเนินการ", f"{total_actions:,}")
+    if total_actions > 0:
+        contacted = int(history["Status"].isin(CONTACTED_STATUSES).sum())
+        interested = int((history["Status"] == "Interested").sum())
+        customer = int((history["Status"] == "Customer").sum())
+        m2.metric("💬 Contacted", f"{contacted:,}")
+        m3.metric("⭐ Interested", f"{interested:,}")
+        m4.metric("🤝 Customer", f"{customer:,}")
+    else:
+        m2.metric("💬 Contacted", "0")
+        m3.metric("⭐ Interested", "0")
+        m4.metric("🤝 Customer", "0")
+
+    if history.empty:
+        st.info(f"ไม่มีประวัติการทำงานในช่วง «{selected_period}»")
+        return
+
+    # --- status breakdown chart (horizontal bar) ----------------------------
+    status_dist = (
+        history.groupby("Status", dropna=False)
+        .size()
+        .reset_index(name="Count")
+        .sort_values("Count", ascending=False)
+    )
+    if show_user_column and not history.empty:
+        chart_col, user_col = st.columns(2)
+        with chart_col:
+            bar = (
+                alt.Chart(status_dist)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Count:Q"),
+                    y=alt.Y("Status:N", sort="-x"),
+                    color=alt.Color("Status:N", legend=None),
+                    tooltip=["Status", "Count"],
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(bar, use_container_width=True)
+        with user_col:
+            user_dist = (
+                history.groupby("Last_Updated_By", dropna=False)
+                .size()
+                .reset_index(name="Count")
+                .sort_values("Count", ascending=False)
+            )
+            bar2 = (
+                alt.Chart(user_dist)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Count:Q"),
+                    y=alt.Y("Last_Updated_By:N", sort="-x", title="User"),
+                    color=alt.Color("Last_Updated_By:N", legend=None),
+                    tooltip=["Last_Updated_By", "Count"],
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(bar2, use_container_width=True)
+    else:
+        bar = (
+            alt.Chart(status_dist)
+            .mark_bar()
+            .encode(
+                x=alt.X("Count:Q"),
+                y=alt.Y("Status:N", sort="-x"),
+                color=alt.Color("Status:N", legend=None),
+                tooltip=["Status", "Count"],
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(bar, use_container_width=True)
+
+    # --- convert Updated_At to Thai timezone for display --------------------
+    thai_tz = timezone(timedelta(hours=7))
+    history["เวลาอัปเดต"] = history["Updated_At_DT"].dt.tz_convert(thai_tz).dt.strftime("%d/%m/%Y %H:%M")
+
+    # --- detail table -------------------------------------------------------
+    st.markdown("### รายละเอียด")
+    display_cols = ["User Name", "Status", "Script_Used", "Notes", "เวลาอัปเดต"]
+    if show_user_column:
+        display_cols.insert(0, "Last_Updated_By")
+
+    available_cols = [c for c in display_cols if c in history.columns]
+    st.dataframe(
+        history[available_cols],
+        use_container_width=True,
+        hide_index=True,
+        height=max(280, 38 + len(history) * 38),
+        column_config={
+            "Last_Updated_By": st.column_config.TextColumn("ผู้ดำเนินการ", width=120),
+            "User Name": st.column_config.TextColumn("ชื่อ Lead", width=180),
+            "Status": st.column_config.TextColumn("สถานะ", width=110),
+            "Script_Used": st.column_config.TextColumn("สคริปต์", width=140),
+            "Notes": st.column_config.TextColumn("บันทึก", width=200),
+            "เวลาอัปเดต": st.column_config.TextColumn("เวลาอัปเดต", width=150),
+        },
+    )
+
+
 def render_admin_dashboard() -> None:
     leads = load_leads()
     st.subheader("Boss View")
@@ -876,7 +1037,7 @@ def render_admin_dashboard() -> None:
         st.info("No leads in worksheet 'Leads'")
         return
 
-    overview_tab, analytics_tab = st.tabs(["Command Center", "War Room Analytics"])
+    overview_tab, analytics_tab, history_tab = st.tabs(["Command Center", "War Room Analytics", "📋 ประวัติการทำงาน"])
 
     with overview_tab:
         processed_mask = leads["Status"].ne("New")
@@ -958,6 +1119,9 @@ def render_admin_dashboard() -> None:
 
     with analytics_tab:
         render_war_room_analytics(leads, "War Room Analytics (All Leads)")
+
+    with history_tab:
+        render_work_history(leads, show_user_column=True)
 
 
 def main() -> None:
